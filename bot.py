@@ -4,20 +4,56 @@ import schedule
 import time
 import threading
 import random
+import os  # <-- ВАЖНО: импорт для работы с переменными окружения
 from datetime import datetime, timedelta
 
-# !!! ВСТАВЬ СЮДА СВОЙ ТОКЕН ОТ @BotFather !!!
+# ==================== БЕЗОПАСНОЕ ПОЛУЧЕНИЕ ТОКЕНА ====================
+# Пробуем получить токен из переменных окружения (для Bothost)
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+
+# Если переменной нет (локальный запуск), пробуем прочитать из файла token.txt
+if not TOKEN:
+    try:
+        with open('token.txt', 'r') as f:
+            TOKEN = f.read().strip()
+    except FileNotFoundError:
+        pass
+
+# Если токен так и не найден — выводим понятную ошибку
+if not TOKEN:
+    error_msg = """
+    ОШИБКА: Токен бота не найден!
+    
+    СПОСОБЫ УСТАНОВКИ ТОКЕНА:
+    1. ДЛЯ BOTHOST.RU (рекомендуется):
+       - В панели управления создайте переменную окружения:
+         Ключ: TELEGRAM_BOT_TOKEN
+         Значение: ваш токен от @BotFather
+    
+    2. ДЛЯ ЛОКАЛЬНОГО ЗАПУСКА:
+       - Создайте файл token.txt в одной папке с ботом
+       - Вставьте в него токен (только токен, без кавычек)
+    
+    Токен можно получить у @BotFather в Telegram.
+    """
+    print(error_msg)
+    raise ValueError("Токен бота не найден. См. инструкцию выше.")
+
+# Создаем экземпляр бота с безопасно полученным токеном
 bot = telebot.TeleBot(TOKEN)
+# =====================================================================
 
 # --- БАЗА ДАННЫХ ---
 def db_query(query, params=(), fetch=False):
+    """Универсальная функция для работы с SQLite"""
     with sqlite3.connect('nofap_ultra.db') as conn:
         cur = conn.cursor()
         cur.execute(query, params)
-        if fetch: return cur.fetchall()
+        if fetch: 
+            return cur.fetchall()
         conn.commit()
 
+# Создаем таблицу, если она не существует
 db_query('''CREATE TABLE IF NOT EXISTS users 
             (id INTEGER, chat_id INTEGER, username TEXT, start_time TEXT, attempts INTEGER, 
             PRIMARY KEY(id, chat_id))''')
@@ -54,27 +90,36 @@ INSULTS = [
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == 'нофап старт')
 def start_nofap(m):
+    """Начало отсчета"""
     uid, cid, name = m.from_user.id, m.chat.id, m.from_user.first_name
     
-    res = db_query("SELECT attempts FROM users WHERE id = ? AND chat_id = ?", (uid, cid), fetch=True)
-    # Обработка результата запроса
+    res = db_query("SELECT attempts FROM users WHERE id = ? AND chat_id = ?", 
+                   (uid, cid), fetch=True)
+    
+    # Определяем номер попытки
     attempts = res[0][0] + 1 if res else 1
     
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    db_query("REPLACE INTO users VALUES (?, ?, ?, ?, ?)", (uid, cid, name, now, attempts))
+    db_query("REPLACE INTO users VALUES (?, ?, ?, ?, ?)", 
+             (uid, cid, name, now, attempts))
     
     bot.reply_to(m, f"🚀 {name}, отсчет пошел! Попытка №{attempts}. Я слежу за тобой...")
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == 'мой нофап')
 def my_stats(m):
-    res = db_query("SELECT start_time, attempts FROM users WHERE id = ? AND chat_id = ?", (m.from_user.id, m.chat.id), fetch=True)
-    if not res: return bot.reply_to(m, "Ты не в игре. Пиши 'нофап старт'")
+    """Показать статистику"""
+    res = db_query("SELECT start_time, attempts FROM users WHERE id = ? AND chat_id = ?", 
+                   (m.from_user.id, m.chat.id), fetch=True)
+    
+    if not res: 
+        return bot.reply_to(m, "Ты не в игре. Пиши 'нофап старт'")
 
     start_dt_str, attempts_val = res[0]
     start_dt = datetime.strptime(start_dt_str, "%Y-%m-%d %H:%M:%S")
     days = (datetime.now() - start_dt).days
     attempts = attempts_val
     
+    # Определяем статус: первые 2 попытки - воин, далее - случайное унижение
     status = "Воин Света" if attempts < 3 else random.choice(INSULTS)
     
     msg = (f"📊 СТАТИСТИКА:\n"
@@ -87,34 +132,66 @@ def my_stats(m):
 # --- АВТО-ФУНКЦИИ (Теги и Мотивация) ---
 
 def daily_check():
-    users = db_query("SELECT id, chat_id, username, start_time FROM users", fetch=True)
-    for u_id, c_id, name, s_time in users:
-        start_dt = datetime.strptime(s_time, "%Y-%m-%d %H:%M:%S")
-        delta = datetime.now() - start_dt
-        
-        # Тегаем каждые 24 часа (если прошло 1, 2, 3... дня)
-        # Простая проверка: если разница в секундах меньше часа, значит, это начало нового дня
-        if delta.days > 0 and delta.seconds < 3600: 
-            bot.send_message(c_id, f"🔔 Эй, [{name}](tg://user?id={u_id})! Поздравляю, ты держишься уже {delta.days} дн.! Продолжай в том же духе.", parse_mode="Markdown")
+    """Ежечасная проверка для тега по дням"""
+    try:
+        users = db_query("SELECT id, chat_id, username, start_time FROM users", fetch=True)
+        for u_id, c_id, name, s_time in users:
+            start_dt = datetime.strptime(s_time, "%Y-%m-%d %H:%M:%S")
+            delta = datetime.now() - start_dt
+            
+            # Тегаем в начале каждого нового дня (первые 3600 секунд дня)
+            if delta.days > 0 and delta.seconds < 3600: 
+                bot.send_message(c_id, 
+                               f"🔔 Эй, [{name}](tg://user?id={u_id})! Поздравляю, ты держишься уже {delta.days} дн.! Продолжай в том же духе.", 
+                               parse_mode="Markdown")
+    except Exception as e:
+        print(f"Ошибка в daily_check: {e}")
 
 def broadcast_motivation():
-    # Отправляем случайную мотивацию во все чаты, где есть хотя бы один пользователь
-    chats = db_query("SELECT DISTINCT chat_id FROM users", fetch=True)
-    for (c_id,) in chats:
-        bot.send_message(c_id, f"📢 **МИНУТКА БАЗЫ:**\n{random.choice(MOTIVATION)}", parse_mode="Markdown")
+    """Рассылка мотивации каждые 6 часов"""
+    try:
+        chats = db_query("SELECT DISTINCT chat_id FROM users", fetch=True)
+        for (c_id,) in chats:
+            bot.send_message(c_id, 
+                           f"📢 **МИНУТКА БАЗЫ:**\n{random.choice(MOTIVATION)}", 
+                           parse_mode="Markdown")
+    except Exception as e:
+        print(f"Ошибка в broadcast_motivation: {e}")
 
 def run_scheduler():
-    schedule.every(1).hours.do(daily_check) # Проверяем каждый час, пора ли кого-то тегать
-    schedule.every(6).hours.do(broadcast_motivation) # Мотивация раз в 6 часов
+    """Запуск планировщика в отдельном потоке"""
+    schedule.every(1).hours.do(daily_check)  # Проверяем каждый час
+    schedule.every(6).hours.do(broadcast_motivation)  # Мотивация раз в 6 часов
+    
     while True:
-        schedule.run_pending()
-        time.sleep(60)
+        try:
+            schedule.run_pending()
+            time.sleep(60)  # Проверяем каждую минуту
+        except Exception as e:
+            print(f"Ошибка в планировщике: {e}")
+            time.sleep(60)
 
 # --- ЗАПУСК ---
 
 if __name__ == '__main__':
-    # Запускаем таймер в отдельном потоке
-    threading.Thread(target=run_scheduler, daemon=True).start()
-    print("Ворден запущен...")
-    # Используем infinity_polling для автономной работы
-    bot.infinity_polling()
+    print("=" * 50)
+    print("🤖 NOFAP WARDEN запускается...")
+    print(f"✅ Токен загружен: {'Да' if TOKEN else 'Нет'}")
+    print("=" * 50)
+    
+    # Запускаем планировщик в фоновом потоке
+    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+    scheduler_thread.start()
+    print("📅 Фоновые задачи запущены")
+    
+    # Основной цикл бота
+    print("🔄 Бот запущен. Ожидание команд...")
+    print("Доступные команды: 'нофап старт', 'мой нофап'")
+    print("-" * 50)
+    
+    try:
+        bot.infinity_polling()
+    except KeyboardInterrupt:
+        print("\n🛑 Бот остановлен пользователем")
+    except Exception as e:
+        print(f"❌ Критическая ошибка: {e}")
