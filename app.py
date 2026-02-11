@@ -1,14 +1,22 @@
-bot.set_webhook(url=f"https://bot_1770118607_9439_hanskapon.bothost.ru/{TOKEN}")
 import os
 from flask import Flask, request
 import telebot
 from db import init_db, start_or_relapse, get_stats, top_users
 from texts import relapse_text, start_text
+from datetime import datetime
 
+# Получаем токен из переменных окружения
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("Не найден токен бота. Установите TELEGRAM_BOT_TOKEN в переменных окружения.")
+
+# Создаём объект бота
 bot = telebot.TeleBot(TOKEN)
+
+# Создаём Flask приложение
 app = Flask(__name__)
 
+# Инициализируем базу
 init_db()
 
 
@@ -67,10 +75,9 @@ def top(m):
     table = []
 
     for u in users:
-        name, start, relapses = u
-        from datetime import datetime
+        name, start_date, relapses = u
         days = (datetime.now() -
-                datetime.strptime(start, "%Y-%m-%d %H:%M:%S")).days
+                datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S")).days
         score = days * 2 - relapses * 3
         table.append((name, days, relapses, score))
 
@@ -84,7 +91,6 @@ def top(m):
 
 
 # --- WEBHOOK ---
-
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
     json_str = request.get_data().decode("UTF-8")
@@ -99,7 +105,13 @@ def index():
 
 
 if __name__ == "__main__":
+    # Удаляем старый вебхук (если есть)
     bot.remove_webhook()
-    bot.set_webhook(url=f"https://YOUR_DOMAIN/{TOKEN}")
+    # Устанавливаем новый вебхук на Bothost
+    DOMAIN = os.getenv("DOMAIN")  # Например: bot_1770118607_9439_hanskapon.bothost.ru
+    if not DOMAIN:
+        raise ValueError("Не найден домен. Установите DOMAIN в переменных окружения Bothost.")
+    bot.set_webhook(url=f"https://{DOMAIN}/{TOKEN}")
+    
+    # Запуск Flask
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
