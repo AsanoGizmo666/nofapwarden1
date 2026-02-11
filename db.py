@@ -1,90 +1,170 @@
 import sqlite3
 from datetime import datetime
 
-DB_NAME = "data.db"
+DB_FILE = "nofap.db"
 
+# ------------------ ИНИЦИАЛИЗАЦИЯ БД ------------------
 def init_db():
-    """Инициализация базы данных"""
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    # Таблица пользователей
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER,
+            uid INTEGER,
             chat_id INTEGER,
             name TEXT,
             start_date TEXT,
-            best_streak INTEGER DEFAULT 0
+            relapses INTEGER DEFAULT 0,
+            PRIMARY KEY (uid, chat_id)
         )
     """)
+    # Таблица ачивок
     c.execute("""
-        CREATE TABLE IF NOT EXISTS relapses (
-            user_id INTEGER,
+        CREATE TABLE IF NOT EXISTS achievements (
+            uid INTEGER,
             chat_id INTEGER,
-            date TEXT
+            title TEXT,
+            PRIMARY KEY (uid, chat_id, title)
+        )
+    """)
+    # Таблица XP
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS xp (
+            uid INTEGER,
+            chat_id INTEGER,
+            xp INTEGER DEFAULT 0,
+            PRIMARY KEY (uid, chat_id)
+        )
+    """)
+    # Таблица активности для молчунов
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS activity (
+            uid INTEGER,
+            chat_id INTEGER,
+            last_activity TEXT,
+            PRIMARY KEY (uid, chat_id)
         )
     """)
     conn.commit()
     conn.close()
 
+# ------------------ СТАРТ ИЛИ СРИВ ------------------
 def start_or_relapse(uid, chat_id, name):
-    """Начало нового пути или фиксация срыва"""
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    c.execute("SELECT * FROM users WHERE user_id=? AND chat_id=?", (uid, chat_id))
+    c.execute("SELECT start_date, relapses FROM users WHERE uid=? AND chat_id=?", (uid, chat_id))
     row = c.fetchone()
-    if row:
-        # Уже есть пользователь — фиксируем срыв
-        add_relapse(uid, chat_id)
-        c.execute("UPDATE users SET start_date=? WHERE user_id=? AND chat_id=?", (now, uid, chat_id))
-        conn.commit()
-        conn.close()
-        return "relapse", 0
-    else:
-        # Новый пользователь
-        c.execute("INSERT INTO users (user_id, chat_id, name, start_date) VALUES (?, ?, ?, ?)",
+    if not row:
+        # новый пользователь
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        c.execute("INSERT INTO users (uid, chat_id, name, start_date) VALUES (?, ?, ?, ?)",
                   (uid, chat_id, name, now))
         conn.commit()
         conn.close()
         return "start", 1
+    else:
+        # пользователь уже есть
+        start_date, relapses = row
+        days = (datetime.now() - datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S")).days
+        add_relapse(uid, chat_id)
+        conn.close()
+        return "relapse", days
 
-def get_stats(uid, chat_id):
-    """Возвращает статистику пользователя"""
-    conn = sqlite3.connect(DB_NAME)
+def add_relapse(uid, chat_id):
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT start_date FROM users WHERE user_id=? AND chat_id=?", (uid, chat_id))
+    c.execute("UPDATE users SET relapses = relapses + 1 WHERE uid=? AND chat_id=?", (uid, chat_id))
+    c.execute("UPDATE users SET start_date=? WHERE uid=? AND chat_id=?",
+              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), uid, chat_id))
+    conn.commit()
+    conn.close()
+
+# ------------------ СТАТА ------------------
+def get_stats(uid, chat_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT start_date, relapses FROM users WHERE uid=? AND chat_id=?", (uid, chat_id))
     row = c.fetchone()
     if not row:
         conn.close()
         return None
-    start_date = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
-    days = (datetime.now() - start_date).days
-
-    c.execute("SELECT COUNT(*) FROM relapses WHERE user_id=? AND chat_id=?", (uid, chat_id))
-    relapses = c.fetchone()[0]
-
-    # для простоты пока best = дней без срыва
-    best = days - relapses
-
+    start_date, relapses = row
+    days = (datetime.now() - datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S")).days
+    best = days  # упрощено
     conn.close()
     return {"days": days, "relapses": relapses, "best": best}
 
+# ------------------ ТОП ------------------
 def top_users(chat_id):
-    """Возвращает топ пользователей в чате"""
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT name, start_date, (SELECT COUNT(*) FROM relapses r WHERE r.user_id=u.user_id) FROM users u WHERE chat_id=?",
-              (chat_id,))
+    c.execute("SELECT name, start_date, relapses FROM users WHERE chat_id=?", (chat_id,))
+    users = c.fetchall()
+    conn.close()
+    return users
+
+# ------------------ ПОСЛЕДНИЕ СРЫВЫ ------------------
+def get_last_relapses(chat_id, limit=5):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT name, start_date FROM users WHERE chat_id=? ORDER BY start_date DESC LIMIT ?", (chat_id, limit))
+    rows = c.fetchall()
+    result = []
+    for name, start_date in rows:
+        days = (datetime.now() - datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S")).days
+        result.append((name, days))
+    conn.close()
+    return result
+
+# ------------------ АКТИВНОСТЬ ------------------
+def get_user_last_activity(uid, chat_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT last_activity FROM activity WHERE uid=? AND chat_id=?", (uid, chat_id))
+    row = c.fetchone()
+    conn.close()
+    if row and row[0]:
+        return datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+    return None
+
+# ------------------ ВСЕ ПОЛЬЗОВАТЕЛИ ------------------
+def get_all_users():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT uid, name, chat_id, start_date, relapses FROM users")
     rows = c.fetchall()
     conn.close()
     return rows
 
-def add_relapse(uid, chat_id):
-    """Фиксирует срыв пользователя"""
-    conn = sqlite3.connect(DB_NAME)
+# ------------------ АЧИВКИ ------------------
+def add_achievement(uid, chat_id, title):
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    c.execute("INSERT INTO relapses (user_id, chat_id, date) VALUES (?, ?, ?)", (uid, chat_id, now))
+    c.execute("INSERT OR IGNORE INTO achievements (uid, chat_id, title) VALUES (?, ?, ?)", (uid, chat_id, title))
     conn.commit()
     conn.close()
+
+def get_achievements(uid, chat_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT title FROM achievements WHERE uid=? AND chat_id=?", (uid, chat_id))
+    rows = c.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+# ------------------ XP ------------------
+def add_xp(uid, chat_id, amount):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO xp (uid, chat_id, xp) VALUES (?, ?, 0)", (uid, chat_id))
+    c.execute("UPDATE xp SET xp = xp + ? WHERE uid=? AND chat_id=?", (amount, uid, chat_id))
+    conn.commit()
+    conn.close()
+
+def get_xp(uid, chat_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT xp FROM xp WHERE uid=? AND chat_id=?", (uid, chat_id))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else 0
