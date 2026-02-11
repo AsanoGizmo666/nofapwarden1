@@ -1,15 +1,21 @@
 import sqlite3
-def add_relapse(uid, chat_id):
-    """Фиксирует срыв пользователя в базе."""
-    import sqlite3
-    from datetime import datetime
+from datetime import datetime
 
-    conn = sqlite3.connect("data.db")
+DB_NAME = "data.db"
+
+def init_db():
+    """Инициализация базы данных"""
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Создаём таблицу relapses, если её нет
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER,
+            chat_id INTEGER,
+            name TEXT,
+            start_date TEXT,
+            best_streak INTEGER DEFAULT 0
+        )
+    """)
     c.execute("""
         CREATE TABLE IF NOT EXISTS relapses (
             user_id INTEGER,
@@ -17,97 +23,68 @@ def add_relapse(uid, chat_id):
             date TEXT
         )
     """)
-    
-    # Добавляем запись о срыве
-    c.execute(
-        "INSERT INTO relapses (user_id, chat_id, date) VALUES (?, ?, ?)",
-        (uid, chat_id, now)
-    )
-
     conn.commit()
     conn.close()
 
-from datetime import datetime
-
-DB_NAME = "bot.db"
-
-
-def init_db():
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER,
-            chat_id INTEGER,
-            username TEXT,
-            start_time TEXT,
-            relapses INTEGER DEFAULT 0,
-            best_streak INTEGER DEFAULT 0,
-            PRIMARY KEY(user_id, chat_id)
-        )
-        """)
-        conn.commit()
-
-
-def get_user(user_id, chat_id):
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM users WHERE user_id=? AND chat_id=?",
-                  (user_id, chat_id))
-        return c.fetchone()
-
-
-def start_or_relapse(user_id, chat_id, username):
+def start_or_relapse(uid, chat_id, name):
+    """Начало нового пути или фиксация срыва"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        user = get_user(user_id, chat_id)
+    c.execute("SELECT * FROM users WHERE user_id=? AND chat_id=?", (uid, chat_id))
+    row = c.fetchone()
+    if row:
+        # Уже есть пользователь — фиксируем срыв
+        add_relapse(uid, chat_id)
+        c.execute("UPDATE users SET start_date=? WHERE user_id=? AND chat_id=?", (now, uid, chat_id))
+        conn.commit()
+        conn.close()
+        return "relapse", 0
+    else:
+        # Новый пользователь
+        c.execute("INSERT INTO users (user_id, chat_id, name, start_date) VALUES (?, ?, ?, ?)",
+                  (uid, chat_id, name, now))
+        conn.commit()
+        conn.close()
+        return "start", 1
 
-        if not user:
-            c.execute("""
-            INSERT INTO users (user_id, chat_id, username, start_time)
-            VALUES (?, ?, ?, ?)
-            """, (user_id, chat_id, username, now))
-            conn.commit()
-            return "start", 0
-
-        else:
-            start_time = datetime.strptime(user[3], "%Y-%m-%d %H:%M:%S")
-            days = (datetime.now() - start_time).days
-
-            best = max(days, user[5])
-
-            c.execute("""
-            UPDATE users
-            SET start_time=?, relapses=relapses+1, best_streak=?
-            WHERE user_id=? AND chat_id=?
-            """, (now, best, user_id, chat_id))
-            conn.commit()
-            return "relapse", days
-
-
-def get_stats(user_id, chat_id):
-    user = get_user(user_id, chat_id)
-    if not user:
+def get_stats(uid, chat_id):
+    """Возвращает статистику пользователя"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT start_date FROM users WHERE user_id=? AND chat_id=?", (uid, chat_id))
+    row = c.fetchone()
+    if not row:
+        conn.close()
         return None
+    start_date = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+    days = (datetime.now() - start_date).days
 
-    start_time = datetime.strptime(user[3], "%Y-%m-%d %H:%M:%S")
-    days = (datetime.now() - start_time).days
+    c.execute("SELECT COUNT(*) FROM relapses WHERE user_id=? AND chat_id=?", (uid, chat_id))
+    relapses = c.fetchone()[0]
 
-    return {
-        "days": days,
-        "relapses": user[4],
-        "best": user[5]
-    }
+    # для простоты пока best = дней без срыва
+    best = days - relapses
 
+    conn.close()
+    return {"days": days, "relapses": relapses, "best": best}
 
 def top_users(chat_id):
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        c.execute("""
-        SELECT username, start_time, relapses
-        FROM users
-        WHERE chat_id=?
-        """, (chat_id,))
-        return c.fetchall()
+    """Возвращает топ пользователей в чате"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT name, start_date, (SELECT COUNT(*) FROM relapses r WHERE r.user_id=u.user_id) FROM users u WHERE chat_id=?",
+              (chat_id,))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def add_relapse(uid, chat_id):
+    """Фиксирует срыв пользователя"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute("INSERT INTO relapses (user_id, chat_id, date) VALUES (?, ?, ?)", (uid, chat_id, now))
+    conn.commit()
+    conn.close()
