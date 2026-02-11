@@ -1,4 +1,32 @@
 import sqlite3
+def add_relapse(uid, chat_id):
+    """Фиксирует срыв пользователя в базе."""
+    import sqlite3
+    from datetime import datetime
+
+    conn = sqlite3.connect("data.db")
+    c = conn.cursor()
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Создаём таблицу relapses, если её нет
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS relapses (
+            user_id INTEGER,
+            chat_id INTEGER,
+            date TEXT
+        )
+    """)
+    
+    # Добавляем запись о срыве
+    c.execute(
+        "INSERT INTO relapses (user_id, chat_id, date) VALUES (?, ?, ?)",
+        (uid, chat_id, now)
+    )
+
+    conn.commit()
+    conn.close()
+
 from datetime import datetime
 
 DB_NAME = "bot.db"
