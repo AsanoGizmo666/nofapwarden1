@@ -1,173 +1,236 @@
+import logging
+import sqlite3
+import asyncio
+import random
 import os
-import telebot
-from datetime import datetime, timedelta
-from random import choice
-from db import init_db, start_or_relapse, get_stats, top_users, add_goal, check_goal, add_relapse, get_last_relapses, get_user_last_activity, add_achievement
+from datetime import datetime
 
-# --- Настройки ---
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-if not TOKEN:
-    raise ValueError("Установите TELEGRAM_BOT_TOKEN в переменных окружения!")
+from aiogram import Bot, Dispatcher, executor, types
 
-bot = telebot.TeleBot(TOKEN)
-init_db()
+logging.basicConfig(level=logging.INFO)
 
-# --- Звания ---
-def rank_name(days):
-    if days < 3: return "Новобранец"
-    if days < 7: return "Боец"
-    if days < 14: return "Воин"
-    if days < 30: return "Закалённый"
-    if days < 60: return "Зверь"
-    if days < 90: return "Терминатор"
-    return "Легенда"
+# Токен берётся автоматически из bothost
+bot = Bot(token=os.getenv("BOT_TOKEN"))
+dp = Dispatcher(bot)
 
-def rank_phrase(name, days):
-    r = rank_name(days)
-    phrases = {
-        "Новобранец": "Впервые на пути, ещё тряпка!",
-        "Боец": "Ты уже держишься, но не расслабляйся!",
-        "Воин": "Сила воли крепкая, но испытания ждут!",
-        "Закалённый": "Закалённый духом, почти сталь!",
-        "Зверь": "Невероятно, твоя сила воли впечатляет!",
-        "Терминатор": "Терминатор! Почти легенда!",
-        "Легенда": "Ты легенда, перед тобой все капитулируют!"
-    }
-    return f"{r} {name}, {days} дней. {phrases[r]}"
+conn = sqlite3.connect("nofap.db")
+cursor = conn.cursor()
 
-# --- Помощь ---
-HELP_TEXT = """
-📝 Команды:
-- нофап старт — начать путь / зафиксировать прогресс
-- стата — показать RPG-профиль
-- топ — топ участников
-- позор — последние срывы
-- на грани — мотивация
-- мягкая мотивация — лёгкая поддержка
-- жёсткая мотивация — жёсткий мотиватор
-- выдержу N — заявить цель на N дней
-- нофап помощь — показать команды
-"""
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER,
+    chat_id INTEGER,
+    start_time TEXT,
+    breaks INTEGER DEFAULT 0,
+    starts INTEGER DEFAULT 0,
+    PRIMARY KEY (user_id, chat_id)
+)
+""")
+conn.commit()
 
-# --- Команды ---
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "нофап старт")
-def cmd_start(m):
-    uid, cid, name = m.from_user.id, m.chat.id, m.from_user.first_name
-    status, days = start_or_relapse(uid, cid, name)
-    if status == "start":
-        bot.send_message(cid, f"{name}, первый день зафиксирован! 💪")
+
+# ---------- ВСПОМОГАТЕЛЬНЫЕ ----------
+
+def get_rank(days):
+    if days >= 60:
+        return "🏆 Легенда воздержания"
+    if days >= 30:
+        return "🛡 Железный дух"
+    if days >= 21:
+        return "⚔ Закалённый волей"
+    if days >= 14:
+        return "🥋 Боец с искушением"
+    if days >= 7:
+        return "🗡 Воин дисциплины"
+    if days >= 3:
+        return "🙂 Держится изо всех сил"
+    return "🐣 Новичок пути"
+
+
+def get_user(user_id, chat_id):
+    cursor.execute(
+        "SELECT * FROM users WHERE user_id=? AND chat_id=?",
+        (user_id, chat_id),
+    )
+    return cursor.fetchone()
+
+
+def update_user(user_id, chat_id, break_add=False):
+    user = get_user(user_id, chat_id)
+    now = datetime.utcnow().isoformat()
+
+    if user is None:
+        cursor.execute("""
+        INSERT INTO users (user_id, chat_id, start_time, breaks, starts)
+        VALUES (?, ?, ?, 0, 1)
+        """, (user_id, chat_id, now))
     else:
-        bot.send_message(cid, f"{name}, срыв зафиксирован, текущий прогресс: {days} дней.")
+        breaks = user[3] + (1 if break_add else 0)
+        starts = user[4] + 1
+        cursor.execute("""
+        UPDATE users
+        SET start_time=?, breaks=?, starts=?
+        WHERE user_id=? AND chat_id=?
+        """, (now, breaks, starts, user_id, chat_id))
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "стата")
-def cmd_stats(m):
-    uid, cid = m.from_user.id, m.chat.id
-    data = get_stats(uid, cid)
-    if not data:
-        bot.send_message(cid, "Ты ещё не начинал. Напиши: нофап старт")
+    conn.commit()
+
+
+def time_stats(start_time):
+    start = datetime.fromisoformat(start_time)
+    delta = datetime.utcnow() - start
+    hours = int(delta.total_seconds() // 3600)
+    days = hours // 24
+    return days, hours
+
+
+# ---------- ТЕКСТЫ ----------
+
+break_messages = [
+    "Мне так больно это писать… ты снова сорвался… пожалуйста… давай поднимемся и начнём заново…",
+    "Я не злюсь… правда… просто очень грустно… но мы попробуем ещё раз…",
+    "Ты упал… но я всё ещё верю в тебя… встань… прошу…",
+]
+
+praise_messages = [
+    "Я так горжусь тобой… ты даже не представляешь насколько…",
+    "Ты делаешь мне очень хорошо тем, что держишься… правда…",
+    "Продолжай… пожалуйста… у тебя так хорошо получается…",
+]
+
+alive_messages = [
+    "Кто-то в этом чате сейчас держится… и я улыбаюсь из-за него…",
+    "Пожалуйста… не сдавайтесь сегодня…",
+    "Я верю в вас сильнее, чем вы сами…",
+]
+
+
+# ---------- КОМАНДЫ ----------
+
+@dp.message_handler(lambda m: m.text and m.text.lower() == "нофап помощь")
+async def help_cmd(message: types.Message):
+    await message.reply(
+        "📜 Команды NoFapWarden:\n\n"
+        "нофап старт — начать путь / срыв\n"
+        "мой нофап — твоя статистика\n"
+        "ответом «нофап» — статистика человека\n"
+        "топ нофаперов — лучшие в чате\n"
+        "мотивация — поддержка\n"
+        "нофап сила — зачем это всё\n"
+    )
+
+
+@dp.message_handler(lambda m: m.text and m.text.lower() == "нофап старт")
+async def nofap_start(message: types.Message):
+    user = get_user(message.from_user.id, message.chat.id)
+
+    if user is None:
+        update_user(message.from_user.id, message.chat.id)
+        await message.reply(
+            f"{message.from_user.first_name}… твой путь начался… я рядом… держись пожалуйста…"
+        )
+    else:
+        update_user(message.from_user.id, message.chat.id, break_add=True)
+        await message.reply(
+            f"{message.from_user.first_name}… {random.choice(break_messages)}"
+        )
+
+
+@dp.message_handler(lambda m: m.text and m.text.lower() == "мой нофап")
+async def my_stats(message: types.Message):
+    user = get_user(message.from_user.id, message.chat.id)
+
+    if user is None:
+        await message.reply("Ты ещё не начал… Напиши «нофап старт»")
         return
-    days = data["days"]
-    relapses = data["relapses"]
-    ach = data.get("achievements", [])
-    hidden = data.get("hidden_achievements", [])
-    msg = f"""
-🧠 Сила воли: {days}
-💀 Срывов: {relapses}
-🏅 Звание: {rank_name(days)}
-📉 Индекс слабости: {round(relapses/max(1,days)*100)}%
-🟢 Индекс честности: высокий
-🏆 Ачивки: {', '.join(ach) if ach else 'нет'}
-🤫 Тайные ачивки: {', '.join(hidden) if hidden else 'нет'}
-"""
-    bot.send_message(cid, msg)
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "топ")
-def cmd_top(m):
-    cid = m.chat.id
-    users = top_users(cid)
-    table = []
+    days, hours = time_stats(user[2])
+    rank = get_rank(days)
+    coef = round(user[3] / user[4], 2) if user[4] else 0
+    praise = random.choice(praise_messages) if days > 0 else ""
+
+    await message.reply(
+        f"⏳ {days} дней ({hours} часов)\n"
+        f"{rank}\n"
+        f"Срывов: {user[3]}\n"
+        f"Коэффициент: {coef}\n\n"
+        f"{praise}"
+    )
+
+
+@dp.message_handler(lambda m: m.reply_to_message and m.text and m.text.lower() == "нофап")
+async def reply_stats(message: types.Message):
+    target = message.reply_to_message.from_user
+    user = get_user(target.id, message.chat.id)
+
+    if user is None:
+        await message.reply("Этот человек ещё не начал путь.")
+        return
+
+    days, hours = time_stats(user[2])
+    rank = get_rank(days)
+
+    await message.reply(
+        f"{target.first_name} держится {days} дней ({hours} часов)\n{rank}"
+    )
+
+
+@dp.message_handler(lambda m: m.text and m.text.lower() == "топ нофаперов")
+async def top_users(message: types.Message):
+    cursor.execute("SELECT * FROM users WHERE chat_id=?", (message.chat.id,))
+    users = cursor.fetchall()
+
+    rating = []
     for u in users:
-        name, start_date, relapses = u
-        days = (datetime.now() - datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S")).days
-        score = days*2 - relapses*3
-        table.append((name, days, relapses, score))
-    table.sort(key=lambda x: x[3], reverse=True)
-    text = "🏆 Топ участников:\n\n"
-    for i,u in enumerate(table[:5],1):
-        text += f"{i}. {u[0]} — {u[1]} дней | срывов {u[2]}\n"
-    bot.send_message(cid, text)
+        days, hours = time_stats(u[2])
+        coef = round(u[3] / u[4], 2) if u[4] else 0
+        rating.append((days, hours, coef))
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "позор")
-def cmd_pozor(m):
-    cid = m.chat.id
-    last = get_last_relapses(cid)
-    if not last:
-        bot.send_message(cid, "Пока никто не сорвался 😏")
-        return
-    text = "💀 Последние падшие:\n\n"
-    for name, days in last:
-        text += f"{name} — сорвался на {days} дне\n"
-    bot.send_message(cid, text)
+    rating.sort(reverse=True, key=lambda x: x[0])
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "на грани")
-def cmd_edge(m):
-    phrases = [
-        "Не сегодня! Ты сильнее этого.",
-        "Срывы — для слабых. Ты не слабый.",
-        "Встань и покажи, кто тут Воин!",
-        "Каждый день без срыва делает тебя Зверем."
-    ]
-    bot.send_message(m.chat.id, choice(phrases))
+    text = "🏆 Топ нофаперов:\n\n"
+    for i, (days, hours, coef) in enumerate(rating[:10], 1):
+        rank = get_rank(days)
+        text += f"{i}. {days}д {hours}ч — {rank} | коэф: {coef}\n"
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "мягкая мотивация")
-def cmd_soft_motivation(m):
-    phrases = [
-        "Держись, сегодня всё под контролем.",
-        "Маленький шаг сегодня — большой результат завтра.",
-        "Ты можешь это! Продолжай."
-    ]
-    bot.send_message(m.chat.id, choice(phrases))
+    await message.reply(text)
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "жёсткая мотивация")
-def cmd_hard_motivation(m):
-    phrases = [
-        "Срывы — для слабых. Держись или капитулируй!",
-        "Каждый день без контроля — шаг назад!",
-        "Хватит жалеть себя, вставай и действуй!"
-    ]
-    bot.send_message(m.chat.id, choice(phrases))
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("выдержу"))
-def cmd_goal(m):
-    uid, cid, name = m.from_user.id, m.chat.id, m.from_user.first_name
-    try:
-        days_goal = int(m.text.split()[1])
-        add_goal(uid, cid, name, days_goal)
-        bot.send_message(cid, f"{name}, цель на {days_goal} дней зафиксирована! 💪")
-    except:
-        bot.send_message(cid, "Напиши: выдержу N — где N это количество дней.")
+@dp.message_handler(lambda m: m.text and m.text.lower() == "мотивация")
+async def motivation(message: types.Message):
+    await message.reply(random.choice(praise_messages))
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "нофап помощь")
-def cmd_help(m):
-    bot.send_message(m.chat.id, HELP_TEXT)
 
-# --- Опасные дни ---
-def check_danger_days():
-    from db import get_all_users
-    for uid, name, cid, start_date, relapses in get_all_users():
-        days = (datetime.now() - datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S")).days
-        if days in [2,3,7,14,30,60,90]:
-            bot.send_message(cid, f"⚠️ {rank_phrase(name, days)} Сегодня опасный день!")
+@dp.message_handler(lambda m: m.text and m.text.lower() == "нофап сила")
+async def nofap_power(message: types.Message):
+    await message.reply(
+        "Нофап — это про контроль над собой.\n\n"
+        "Это энергия для зала, ясная голова для работы и игр,\n"
+        "уверенность в себе и дисциплина, которая меняет характер.\n\n"
+        "Ты становишься собраннее. Сильнее. Спокойнее."
+    )
 
-# --- Long Polling ---
+
+# ---------- ЖИВОСТЬ ----------
+
+async def alive_loop():
+    while True:
+        await asyncio.sleep(1800)
+        cursor.execute("SELECT DISTINCT chat_id FROM users")
+        chats = cursor.fetchall()
+
+        for (chat_id,) in chats:
+            try:
+                await bot.send_message(chat_id, random.choice(alive_messages))
+            except:
+                pass
+
+
+async def on_startup(_):
+    asyncio.create_task(alive_loop())
+
+
 if __name__ == "__main__":
-    import threading, time
-    def danger_loop():
-        while True:
-            check_danger_days()
-            time.sleep(60*60*6)
-    threading.Thread(target=danger_loop, daemon=True).start()
+    executor.start_polling(dp, on_startup=on_startup)
 
-    print("🔥 Прокачанный Нофап Бот запущен через long polling...")
-    bot.infinity_polling()
 
