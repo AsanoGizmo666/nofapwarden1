@@ -4,29 +4,31 @@ import asyncio
 import random
 import os
 from datetime import datetime
+from threading import Lock
 
 from aiogram import Bot, Dispatcher, executor, types
 
 logging.basicConfig(level=logging.INFO)
 
-# Токен берётся автоматически из bothost
 bot = Bot(token=os.getenv("BOT_TOKEN"))
 dp = Dispatcher(bot)
 
-conn = sqlite3.connect("nofap.db")
+db_lock = Lock()
+conn = sqlite3.connect("nofap.db", check_same_thread=False)
 cursor = conn.cursor()
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER,
-    chat_id INTEGER,
-    start_time TEXT,
-    breaks INTEGER DEFAULT 0,
-    starts INTEGER DEFAULT 0,
-    PRIMARY KEY (user_id, chat_id)
-)
-""")
-conn.commit()
+with db_lock:
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER,
+        chat_id INTEGER,
+        start_time TEXT,
+        breaks INTEGER DEFAULT 0,
+        starts INTEGER DEFAULT 0,
+        PRIMARY KEY (user_id, chat_id)
+    )
+    """)
+    conn.commit()
 
 
 # ---------- ВСПОМОГАТЕЛЬНЫЕ ----------
@@ -48,32 +50,35 @@ def get_rank(days):
 
 
 def get_user(user_id, chat_id):
-    cursor.execute(
-        "SELECT * FROM users WHERE user_id=? AND chat_id=?",
-        (user_id, chat_id),
-    )
-    return cursor.fetchone()
+    with db_lock:
+        cursor.execute(
+            "SELECT * FROM users WHERE user_id=? AND chat_id=?",
+            (user_id, chat_id),
+        )
+        return cursor.fetchone()
 
 
 def update_user(user_id, chat_id, break_add=False):
-    user = get_user(user_id, chat_id)
     now = datetime.utcnow().isoformat()
 
-    if user is None:
-        cursor.execute("""
-        INSERT INTO users (user_id, chat_id, start_time, breaks, starts)
-        VALUES (?, ?, ?, 0, 1)
-        """, (user_id, chat_id, now))
-    else:
-        breaks = user[3] + (1 if break_add else 0)
-        starts = user[4] + 1
-        cursor.execute("""
-        UPDATE users
-        SET start_time=?, breaks=?, starts=?
-        WHERE user_id=? AND chat_id=?
-        """, (now, breaks, starts, user_id, chat_id))
+    with db_lock:
+        user = get_user(user_id, chat_id)
 
-    conn.commit()
+        if user is None:
+            cursor.execute("""
+            INSERT INTO users (user_id, chat_id, start_time, breaks, starts)
+            VALUES (?, ?, ?, 0, 1)
+            """, (user_id, chat_id, now))
+        else:
+            breaks = user[3] + (1 if break_add else 0)
+            starts = user[4] + 1
+            cursor.execute("""
+            UPDATE users
+            SET start_time=?, breaks=?, starts=?
+            WHERE user_id=? AND chat_id=?
+            """, (now, breaks, starts, user_id, chat_id))
+
+        conn.commit()
 
 
 def time_stats(start_time):
@@ -177,8 +182,9 @@ async def reply_stats(message: types.Message):
 
 @dp.message_handler(lambda m: m.text and m.text.lower() == "топ нофаперов")
 async def top_users(message: types.Message):
-    cursor.execute("SELECT * FROM users WHERE chat_id=?", (message.chat.id,))
-    users = cursor.fetchall()
+    with db_lock:
+        cursor.execute("SELECT * FROM users WHERE chat_id=?", (message.chat.id,))
+        users = cursor.fetchall()
 
     rating = []
     for u in users:
@@ -216,8 +222,9 @@ async def nofap_power(message: types.Message):
 async def alive_loop():
     while True:
         await asyncio.sleep(1800)
-        cursor.execute("SELECT DISTINCT chat_id FROM users")
-        chats = cursor.fetchall()
+        with db_lock:
+            cursor.execute("SELECT DISTINCT chat_id FROM users")
+            chats = cursor.fetchall()
 
         for (chat_id,) in chats:
             try:
@@ -232,5 +239,3 @@ async def on_startup(_):
 
 if __name__ == "__main__":
     executor.start_polling(dp, on_startup=on_startup)
-
-
