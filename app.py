@@ -8,7 +8,6 @@ from threading import Lock
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.types import Message
-from aiogram.filters import Text
 
 logging.basicConfig(level=logging.INFO)
 
@@ -100,84 +99,75 @@ def get_rank(days):
     if days >= 3: return "🙂 Держится изо всех сил"
     return "🐣 Новичок пути"
 
-# -------------------- ХЭНДЛЕРЫ --------------------
-@router.message(Text(equals="нофап старт", ignore_case=True))
-async def nofap_start(message: Message):
-    user = get_user(message.from_user.id, message.chat.id)
-    if user is None:
-        update_user(message.from_user.id, message.chat.id)
-        await message.answer(
-            "Твой путь начался… я буду рядом и поддерживать тебя… пожалуйста, держись!"
-        )
-    else:
-        update_user(message.from_user.id, message.chat.id, break_add=True)
-        await message.answer(random.choice(break_messages))
-
-@router.message(Text(equals="мой нофап", ignore_case=True))
-async def my_nofap(message: Message):
-    user = get_user(message.from_user.id, message.chat.id)
-    if user is None:
-        await message.answer("Ты ещё не начал… напиши «нофап старт»")
+# -------------------- ХЭНДЛЕР ВСЕХ СООБЩЕНИЙ --------------------
+@router.message()
+async def all_messages(message: Message):
+    if not message.text:
         return
-    days, hours = time_stats(user[2])
-    coef = round(user[3] / user[4], 2)
-    await message.answer(
-        f"⏳ Ты держишься {days} дней ({hours} часов)\n"
-        f"Срывов: {user[3]}\nКоэффициент: {coef}\n\n"
-        + random.choice(praise_messages)
-    )
+    text = message.text.lower()
 
-@router.message(Text(equals="топ нофаперов", ignore_case=True))
-async def top_nofapers(message: Message):
-    with db_lock:
-        cursor.execute("SELECT * FROM users WHERE chat_id=?", (message.chat.id,))
-        users = cursor.fetchall()
-    rating = []
-    for u in users:
-        days, hours = time_stats(u[2])
-        rating.append((days, hours, u[3]))
-    rating.sort(reverse=True, key=lambda x: x[0])
-    msg = "🏆 Топ нофаперов:\n"
-    for i, (d, h, breaks) in enumerate(rating[:10], 1):
-        msg += f"{i}. {d}д {h}ч | Срывов: {breaks}\n"
-    await message.answer(msg)
+    if text == "нофап старт":
+        user = get_user(message.from_user.id, message.chat.id)
+        if user is None:
+            update_user(message.from_user.id, message.chat.id)
+            await message.answer("Твой путь начался… я буду рядом и поддерживать тебя… пожалуйста, держись!")
+        else:
+            update_user(message.from_user.id, message.chat.id, break_add=True)
+            await message.answer(random.choice(break_messages))
 
-@router.message(Text(equals="мотивация", ignore_case=True))
-async def motivation(message: Message):
-    await message.answer(random.choice(praise_messages))
-
-@router.message(Text(equals="нофап сила", ignore_case=True))
-async def nofap_power(message: Message):
-    await message.answer(
-        "Нофап — это контроль над собой. Когда ты держишься:\n\n"
-        "💪 В качалке: больше энергии, больше силы и мотивации. "
-        "Тело лучше откликается, мышцы растут быстрее.\n"
-        "🎮 В Лиге Легенд: меньше тильтуешь, больше концентрации, быстрее принимаешь решения, апается рейтинг.\n"
-        "🧠 В жизни: ясная голова, дисциплина, контроль эмоций, стабильность.\n\n"
-        "Это путь к силе, фокусу и внутреннему спокойствию."
-    )
-
-@router.message(Text(equals="нофап помощь", ignore_case=True))
-async def help_nofap(message: Message):
-    await message.answer(
-        "📜 Команды NoFapWarden:\n"
-        "нофап старт — начать путь / срыв\n"
-        "мой нофап — твоя статистика\n"
-        "ответом «нофап» — статистика человека\n"
-        "топ нофаперов — рейтинг в чате\n"
-        "мотивация — поддержка\n"
-        "нофап сила — зачем это всё"
-    )
-
-@router.message(Text(equals="нофап", ignore_case=True))
-async def reply_nofap(message: Message):
-    if not message.reply_to_message:
-        return
-    target = message.reply_to_message.from_user
-    user = get_user(target.id, message.chat.id)
-    if user:
+    elif text == "мой нофап":
+        user = get_user(message.from_user.id, message.chat.id)
+        if user is None:
+            await message.answer("Ты ещё не начал… напиши «нофап старт»")
+            return
         days, hours = time_stats(user[2])
-        await message.answer(f"{target.first_name} держится {days}д {hours}ч\n" + random.choice(praise_messages))
+        coef = round(user[3] / user[4], 2)
+        await message.answer(f"⏳ Ты держишься {days} дней ({hours} часов)\nСрывов: {user[3]}\nКоэффициент: {coef}\n\n"+random.choice(praise_messages))
+
+    elif text == "топ нофаперов":
+        with db_lock:
+            cursor.execute("SELECT * FROM users WHERE chat_id=?", (message.chat.id,))
+            users = cursor.fetchall()
+        rating = []
+        for u in users:
+            days, hours = time_stats(u[2])
+            rating.append((days, hours, u[3]))
+        rating.sort(reverse=True, key=lambda x: x[0])
+        msg = "🏆 Топ нофаперов:\n"
+        for i, (d, h, breaks) in enumerate(rating[:10], 1):
+            msg += f"{i}. {d}д {h}ч | Срывов: {breaks}\n"
+        await message.answer(msg)
+
+    elif text == "мотивация":
+        await message.answer(random.choice(praise_messages))
+
+    elif text == "нофап сила":
+        await message.answer(
+            "Нофап — это контроль над собой. Когда ты держишься:\n\n"
+            "💪 В качалке: больше энергии, больше силы и мотивации. "
+            "Тело лучше откликается, мышцы растут быстрее.\n"
+            "🎮 В Лиге Легенд: меньше тильтуешь, больше концентрации, быстрее принимаешь решения, апается рейтинг.\n"
+            "🧠 В жизни: ясная голова, дисциплина, контроль эмоций, стабильность.\n\n"
+            "Это путь к силе, фокусу и внутреннему спокойствию."
+        )
+
+    elif text == "нофап помощь":
+        await message.answer(
+            "📜 Команды NoFapWarden:\n"
+            "нофап старт — начать путь / срыв\n"
+            "мой нофап — твоя статистика\n"
+            "ответом «нофап» — статистика человека\n"
+            "топ нофаперов — рейтинг в чате\n"
+            "мотивация — поддержка\n"
+            "нофап сила — зачем это всё"
+        )
+
+    elif text == "нофап" and message.reply_to_message:
+        target = message.reply_to_message.from_user
+        user = get_user(target.id, message.chat.id)
+        if user:
+            days, hours = time_stats(user[2])
+            await message.answer(f"{target.first_name} держится {days}д {hours}ч\n" + random.choice(praise_messages))
 
 # -------------------- ALIVE LOOP --------------------
 async def alive_loop():
