@@ -1,17 +1,19 @@
-import logging
-import sqlite3
 import asyncio
-import random
+import logging
 import os
+import random
+import sqlite3
 from datetime import datetime
 from threading import Lock
 
-from aiogram import Bot, Dispatcher, executor, types
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import Message
 
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=os.getenv("BOT_TOKEN"))
-dp = Dispatcher(bot)
+dp = Dispatcher()
 
 db_lock = Lock()
 conn = sqlite3.connect("nofap.db", check_same_thread=False)
@@ -34,19 +36,13 @@ with db_lock:
 # ---------- ВСПОМОГАТЕЛЬНЫЕ ----------
 
 def get_rank(days):
-    if days >= 60:
-        return "🏆 Легенда воздержания"
-    if days >= 30:
-        return "🛡 Железный дух"
-    if days >= 21:
-        return "⚔ Закалённый волей"
-    if days >= 14:
-        return "🥋 Боец с искушением"
-    if days >= 7:
-        return "🗡 Воин дисциплины"
-    if days >= 3:
-        return "🙂 Держится изо всех сил"
-    return "🐣 Новичок пути"
+    if days >= 60: return "🏆 Легенда"
+    if days >= 30: return "🛡 Железный"
+    if days >= 21: return "⚔ Закалённый"
+    if days >= 14: return "🥋 Боец"
+    if days >= 7: return "🗡 Воин"
+    if days >= 3: return "🙂 Держится"
+    return "🐣 Новичок"
 
 
 def get_user(user_id, chat_id):
@@ -92,129 +88,99 @@ def time_stats(start_time):
 # ---------- ТЕКСТЫ ----------
 
 break_messages = [
-    "Мне так больно это писать… ты снова сорвался… пожалуйста… давай поднимемся и начнём заново…",
-    "Я не злюсь… правда… просто очень грустно… но мы попробуем ещё раз…",
-    "Ты упал… но я всё ещё верю в тебя… встань… прошу…",
+    "Мне так больно… ты сорвался… давай начнём заново… прошу…",
+    "Я не злюсь… просто грущу… поднимайся…",
 ]
 
 praise_messages = [
-    "Я так горжусь тобой… ты даже не представляешь насколько…",
-    "Ты делаешь мне очень хорошо тем, что держишься… правда…",
-    "Продолжай… пожалуйста… у тебя так хорошо получается…",
+    "Я так горжусь тобой… правда…",
+    "Ты делаешь мне хорошо тем, что держишься…",
 ]
 
 alive_messages = [
-    "Кто-то в этом чате сейчас держится… и я улыбаюсь из-за него…",
+    "Кто-то здесь держится… и я радуюсь за него…",
     "Пожалуйста… не сдавайтесь сегодня…",
-    "Я верю в вас сильнее, чем вы сами…",
 ]
 
 
-# ---------- КОМАНДЫ ----------
+# ---------- ХЕНДЛЕР ----------
 
-@dp.message_handler(lambda m: m.text and m.text.lower() == "нофап помощь")
-async def help_cmd(message: types.Message):
-    await message.reply(
-        "📜 Команды NoFapWarden:\n\n"
-        "нофап старт — начать путь / срыв\n"
-        "мой нофап — твоя статистика\n"
-        "ответом «нофап» — статистика человека\n"
-        "топ нофаперов — лучшие в чате\n"
-        "мотивация — поддержка\n"
-        "нофап сила — зачем это всё\n"
-    )
-
-
-@dp.message_handler(lambda m: m.text and m.text.lower() == "нофап старт")
-async def nofap_start(message: types.Message):
-    user = get_user(message.from_user.id, message.chat.id)
-
-    if user is None:
-        update_user(message.from_user.id, message.chat.id)
-        await message.reply(
-            f"{message.from_user.first_name}… твой путь начался… я рядом… держись пожалуйста…"
-        )
-    else:
-        update_user(message.from_user.id, message.chat.id, break_add=True)
-        await message.reply(
-            f"{message.from_user.first_name}… {random.choice(break_messages)}"
-        )
-
-
-@dp.message_handler(lambda m: m.text and m.text.lower() == "мой нофап")
-async def my_stats(message: types.Message):
-    user = get_user(message.from_user.id, message.chat.id)
-
-    if user is None:
-        await message.reply("Ты ещё не начал… Напиши «нофап старт»")
+@dp.message()
+async def handler(message: Message):
+    if not message.text:
         return
 
-    days, hours = time_stats(user[2])
-    rank = get_rank(days)
-    coef = round(user[3] / user[4], 2) if user[4] else 0
-    praise = random.choice(praise_messages) if days > 0 else ""
+    text = message.text.lower()
 
-    await message.reply(
-        f"⏳ {days} дней ({hours} часов)\n"
-        f"{rank}\n"
-        f"Срывов: {user[3]}\n"
-        f"Коэффициент: {coef}\n\n"
-        f"{praise}"
-    )
+    if text == "нофап помощь":
+        await message.answer(
+            "📜 Команды:\n"
+            "нофап старт\n"
+            "мой нофап\n"
+            "ответом «нофап»\n"
+            "топ нофаперов\n"
+            "мотивация\n"
+            "нофап сила"
+        )
 
+    elif text == "нофап старт":
+        user = get_user(message.from_user.id, message.chat.id)
 
-@dp.message_handler(lambda m: m.reply_to_message and m.text and m.text.lower() == "нофап")
-async def reply_stats(message: types.Message):
-    target = message.reply_to_message.from_user
-    user = get_user(target.id, message.chat.id)
+        if user is None:
+            update_user(message.from_user.id, message.chat.id)
+            await message.answer("Твой путь начался… держись…")
+        else:
+            update_user(message.from_user.id, message.chat.id, break_add=True)
+            await message.answer(random.choice(break_messages))
 
-    if user is None:
-        await message.reply("Этот человек ещё не начал путь.")
-        return
+    elif text == "мой нофап":
+        user = get_user(message.from_user.id, message.chat.id)
+        if user is None:
+            await message.answer("Ты ещё не начал.")
+            return
 
-    days, hours = time_stats(user[2])
-    rank = get_rank(days)
-
-    await message.reply(
-        f"{target.first_name} держится {days} дней ({hours} часов)\n{rank}"
-    )
-
-
-@dp.message_handler(lambda m: m.text and m.text.lower() == "топ нофаперов")
-async def top_users(message: types.Message):
-    with db_lock:
-        cursor.execute("SELECT * FROM users WHERE chat_id=?", (message.chat.id,))
-        users = cursor.fetchall()
-
-    rating = []
-    for u in users:
-        days, hours = time_stats(u[2])
-        coef = round(u[3] / u[4], 2) if u[4] else 0
-        rating.append((days, hours, coef))
-
-    rating.sort(reverse=True, key=lambda x: x[0])
-
-    text = "🏆 Топ нофаперов:\n\n"
-    for i, (days, hours, coef) in enumerate(rating[:10], 1):
+        days, hours = time_stats(user[2])
         rank = get_rank(days)
-        text += f"{i}. {days}д {hours}ч — {rank} | коэф: {coef}\n"
+        coef = round(user[3] / user[4], 2)
 
-    await message.reply(text)
+        await message.answer(
+            f"{days} дней ({hours} часов)\n{rank}\nСрывов: {user[3]}\nКоэф: {coef}\n\n"
+            + random.choice(praise_messages)
+        )
 
+    elif text == "топ нофаперов":
+        with db_lock:
+            cursor.execute("SELECT * FROM users WHERE chat_id=?", (message.chat.id,))
+            users = cursor.fetchall()
 
-@dp.message_handler(lambda m: m.text and m.text.lower() == "мотивация")
-async def motivation(message: types.Message):
-    await message.reply(random.choice(praise_messages))
+        rating = []
+        for u in users:
+            days, hours = time_stats(u[2])
+            coef = round(u[3] / u[4], 2)
+            rating.append((days, hours, coef))
 
+        rating.sort(reverse=True, key=lambda x: x[0])
 
-@dp.message_handler(lambda m: m.text and m.text.lower() == "нофап сила")
-async def nofap_power(message: types.Message):
-    await message.reply(
-        "Нофап — это про контроль над собой.\n\n"
-        "Это энергия для зала, ясная голова для работы и игр,\n"
-        "уверенность в себе и дисциплина, которая меняет характер.\n\n"
-        "Ты становишься собраннее. Сильнее. Спокойнее."
-    )
+        msg = "🏆 Топ:\n"
+        for i, (d, h, c) in enumerate(rating[:10], 1):
+            msg += f"{i}. {d}д {h}ч | коэф {c}\n"
+
+        await message.answer(msg)
+
+    elif text == "мотивация":
+        await message.answer(random.choice(praise_messages))
+
+    elif text == "нофап сила":
+        await message.answer(
+            "Нофап даёт фокус, энергию, дисциплину и ясную голову."
+        )
+
+    elif message.reply_to_message and text == "нофап":
+        target = message.reply_to_message.from_user
+        user = get_user(target.id, message.chat.id)
+        if user:
+            days, hours = time_stats(user[2])
+            await message.answer(f"{target.first_name}: {days}д {hours}ч")
 
 
 # ---------- ЖИВОСТЬ ----------
@@ -233,9 +199,10 @@ async def alive_loop():
                 pass
 
 
-async def on_startup(_):
+async def main():
     asyncio.create_task(alive_loop())
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    executor.start_polling(dp, on_startup=on_startup)
+    asyncio.run(main())
