@@ -6,9 +6,15 @@ from threading import Lock, Thread
 import time
 
 import telebot
+from dotenv import load_dotenv
 
 # ================== Настройки ==================
+load_dotenv()  # загружает .env
 TOKEN = os.getenv("BOT_TOKEN")
+
+if not TOKEN:
+    raise ValueError("❌ Bot token is not defined! Установите BOT_TOKEN в .env или переменной окружения.")
+
 bot = telebot.TeleBot(TOKEN)
 
 db_lock = Lock()
@@ -167,8 +173,8 @@ def alive_loop():
         for (chat_id,) in chats:
             try:
                 bot.send_message(chat_id, random.choice(alive_messages))
-            except:
-                pass
+            except Exception as e:
+                print(f"Ошибка при отправке alive-сообщения в чат {chat_id}: {e}")
 
 # ================== Запуск ==================
 if __name__ == "__main__":
